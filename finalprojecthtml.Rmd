@@ -1,11 +1,4 @@
----
-title: "Final Project"
-author: "Alessio Di Cesidio    1904226"
-date: "9/2/2023"
-output:
-  html_document: default
-  pdf_document: default
----
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
