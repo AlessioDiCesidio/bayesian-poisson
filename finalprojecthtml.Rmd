@@ -1,0 +1,538 @@
+---
+title: "Final Project"
+author: "Alessio Di Cesidio    1904226"
+date: "9/2/2023"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## INTRODUCTION OF THE DATASET
+
+A bayesian analysis of sports, and in particular football, is an interesting topic for all the fans around the globe of the most famous sport in the world.
+Many researches have been done about prediction in the world of football using bayesian modelling. Some models using a binomial or a negative binomial analysis have been used in the past. However, the Poisson distribution has been largely used in the last years for describe the distribution of goals scored in a match. 
+For this project, I proposed a bayesian hierarchical model for the numbers of goals scored in each match by two teams. Moreover, a deeper analysis of the home factor will be discussed, to see how this factor influence the goals scored by a team.
+The dataset is taken by the data of all goals scored in Serie A 2018-2019 by all the teams, for a total of 380 games.
+I will firstly described the dataset with a histogram of the goals scored, where teams are assigned at a unique ID while the data then is presented.
+
+
+```{r include=T, echo=F}
+#import dataset
+season.1819_csv <- read.csv("C:/Users/aless/Desktop/MSc Statistics/Bayesian Modelling/season-1819_csv.csv", sep=";", stringsAsFactors=TRUE)
+
+#####DATASET----
+season.1819_csv <- read.csv("C:/Users/aless/Desktop/MSc Statistics/Bayesian Modelling/season-1819_csv.csv", sep=";", stringsAsFactors=TRUE)
+data<-as.data.frame(season.1819_csv)
+attach(data)
+#create ID for each team
+data<-data[,-c(1,8,9,10,11)]
+teams<-union(HomeTeam,AwayTeam)
+data$IDh<-factor(HomeTeam,levels = teams,labels = seq_along(teams))
+data$IDa<-factor(AwayTeam,levels = teams,labels = seq_along(teams))
+head(data)
+```
+
+Let's present an overview of the data by showing an histogram to see the goals scored by a team in a match and then the actual distribution with a Poisson distribution, to see that the Poisson is a good distribution to analyse the goals scored.
+In these histograms we can see the distribution of the number of goals socred by a team in a match, in the first graph, while in the second graph we have a random poisson distribution of the number of goals scored by a team with the same mean as above.
+
+```{r echo=FALSE}
+histogram<-hist(c(data$away.goals,data$home.goals),xlim=c(-0.5,8),breaks = -1:9 +0.5, 
+                main="Distribution of goals scored by a team in a match")
+mean_goals<-mean(c(data$away.goals,data$home.goals))
+x<-rpois(10000,mean_goals)
+hist(x,probability = T,breaks = -1:9 +0.5, main = "Random poisson distribution goals scored from a random poisson", xlab = "Goals scored")
+```
+
+The two histogram are very similar between each other so Poisson distribution approximate very well the number of goals scored by a team.
+
+
+## BAYESIAN ANALYSIS
+
+PRIOR DISTRIBUTION
+
+I can present now the first model. Firstly, we know from previous research that the number of goals scored can be approximated as a Poisson distribution. Then, each them has a possibility of scoring a goal given by the baseline, plus its skills and minus the skills of the away team.
+In this first model, I consider baseline as a propensity to just score a goal in a match. So when both teams are equally good there is a certain number of goals, defined by the baseline effect.
+
+
+$Goals \sim {\sf Poisson}(λ)$
+
+$HomeGoals_{i,j} \sim {\sf Poisson}(λ_{home,i,j})$
+
+$AwayGoals_{i,j} \sim {\sf Poisson}(λ_{away,i,j})$
+
+$log(λ_{home}) = baseline + skill_{i} - skill_{j}$
+
+$log(λ_{away}) = baseline + skill_{j} - skill_{i}$
+
+
+
+Now we need to update our priors for all the teams.
+The priors that I choose for this model are pretty much uninformative prior. For the baseline I choose a normal distribution with mean zero and sd 1 (since the log of 16 is almost 1). For the variance I choose a wide unfiorm prior, since we assume a non-informative model.
+
+
+$baseline \sim {\sf Normal}(0,4^{2})$
+
+$skill_{1...n} \sim {\sf Normal}(µ,σ)$
+
+$µ \sim {\sf Normal}(0,4^{2})$
+
+$σ \sim {\sf Uniform}(0,3)$
+
+$τ = {1/σ^{2}}$
+
+Where tau is the parameter of the precision, so the reciprocal of the variance.
+Then I have to put the first skill as zero, so as a constant, otherwise the mean skill would change freely.
+We can construct the model with JAGS as follows:
+
+
+MODEL WITH JAGS
+
+```{r}
+m_1<-"model {
+for(i in 1:n_games) {
+  HomeGoals[i] ~ dpois(lambda_home[HomeTeam[i],AwayTeam[i]])
+  AwayGoals[i] ~ dpois(lambda_away[HomeTeam[i],AwayTeam[i]])
+}
+
+for(home_i in 1:n_teams) {
+  for(away_i in 1:n_teams) {
+    lambda_home[home_i, away_i] <- exp(baseline + skill[home_i] - skill[away_i])
+    lambda_away[home_i, away_i] <- exp(baseline + skill[away_i] - skill[home_i])
+  }
+}
+skill[1]<-0
+for(j in 2:n_teams) {
+  skill[j] ~ dnorm(group_skill, group_tau)
+}  
+
+group_skill ~ dnorm(0, 0.0625)
+group_tau <- 1 / pow(group_sigma, 2)
+group_sigma ~ dunif(0, 3)
+baseline ~ dnorm(0, 0.0625)
+}"
+
+dl<-list(HomeGoals=data$home.goals,AwayGoals=data$away.goals,HomeTeam=data$IDh,
+         AwayTeam=data$IDa,
+         n_teams=length(teams),n_games=nrow(data))
+
+```
+
+```{r include=FALSE}
+Sys.setenv(JAGS_HOME="C:/Program Files/JAGS/JAGS-4.3.0")
+library(R2jags)
+library(coda)
+library(ggmcmc)
+```
+
+```{r, echo=FALSE, results='hide'}
+model1_fit<-jags.model(textConnection(m_1),data = dl,n.chains=3,n.adapt = 10000)
+
+
+
+#MCMC samples
+sample_1<-coda.samples(model1_fit,variable.names = c("baseline","skill","group_skill","group_sigma"),n.iter = 10000,thin = 2)
+ms_1<-as.matrix(sample_1)
+
+```
+
+We can see from the sample that, for example, Juventus has a higher level of skills, while Frosinone has a low value for its skills, as was possible to imagine since in serie A 2018-19 Juventus ended up first while Frosinone in the 19th place.
+```{r}
+mean(ms_1[,"skill[13]"])
+mean(ms_1[,"skill[9]"])
+
+
+```
+Now we can see the traceplot and the density for the level of skills of Juventus and Frosinone, to see graphically the differences, and we can notice a big difference between the two teams.
+
+```{r , echo=FALSE}
+plot(sample_1[,"skill[13]"],main="")
+mtext("Traceplot and Density for Frosinone", side = 3, line = -1,outer = T)
+plot(sample_1[,"skill[9]"],main="") 
+mtext("Traceplot and Density for Juventus",side = 3, line = -1,outer = T)
+```
+
+
+Indeed, seems that Frosinone is way weaker than Juventus, and actually this was true in 2018-19.
+However, we can arleady see that this model has some problems by seeing the traceplot, where the chains are going down at the end of the sample and are a bit different between each other. So we must say that this model is not so useful for our analysis. Moreover, a home effect is not considered here, but in football and in sport in general, this is very important. Let's move forward to another model where this is considered.
+
+We are interested in the difference of the home factor for the teams that are playing at home instead of playing away. Now a new model will be performed where now the baseline is not a factor equal for both teams but it's different for home and for away teams. In fact the home factor is a strength for the other team, but also the away factor could be a strength for some teams. 
+We have a new model with the same distribution used fir the previous model, however now we add a distribution for the home_baseline and the away_baseline, distributed as a Normal with mean 0 and variance.
+
+$Homebaseline \sim {\sf Normal}(0,4^{2})$
+
+$Awaybaseline \sim {\sf Normal}(0,4^{2})$
+
+$log(λ_{home}) = homebaseline + skill_{i} - skill_{j}$
+
+$log(λ_{away}) = awaybaseline + skill_{j} - skill_{i}$
+
+However, in the JAGS model instead of the variance the precision parameter tau is considered (1/16). 
+
+```{r echo=TRUE, results='hide'}
+m2<- "model {
+for(i in 1:n_games) {
+  HomeGoals[i] ~ dpois(lambda_home[HomeTeam[i],AwayTeam[i]])
+  AwayGoals[i] ~ dpois(lambda_away[HomeTeam[i],AwayTeam[i]])
+}
+
+for(home_i in 1:n_teams) {
+  for(away_i in 1:n_teams) {
+    lambda_home[home_i, away_i] <- exp( home_baseline + skill[home_i] - skill[away_i])
+    lambda_away[home_i, away_i] <- exp( away_baseline + skill[away_i] - skill[home_i])
+  }
+}
+
+skill[1] <- 0 
+for(j in 2:n_teams) {
+  skill[j] ~ dnorm(group_skill, group_tau)
+}
+
+group_skill ~ dnorm(0, 0.0625)
+group_tau <- 1/pow(group_sigma, 2)
+group_sigma ~ dunif(0, 3)
+
+home_baseline ~ dnorm(0, 0.0625)
+away_baseline ~ dnorm(0, 0.0625)
+}"
+
+m2 <- jags.model(textConnection(m2), data=dl, n.chains=3, n.adapt=5000)
+s2 <- coda.samples(m2, variable.names=c("home_baseline", "away_baseline","skill", "group_sigma", "group_skill"), n.iter=10000, thin=2)
+ms2 <- as.matrix(s2)
+
+```
+From the traceplot and the density plots of the home factor and away factor we can see some differences.
+
+```{r, echo=FALSE}
+plot(s2[,"home_baseline"],main="")
+mtext("Traceplot and Density of the home factor",side = 3, line = -1,outer = T)
+plot(s2[,"away_baseline"],main="")
+mtext("Traceplot and Density of the away factor",side = 3, line = -1,outer = T)
+
+```
+
+There is a higher strength and a higher possibility of scoring a goal if a team is playing at home. 
+We can check this difference also graphically by taking the difference between exp(home_baseline) and exp(away_baseline), so we make the hypothesis that the two teams have the same level of skill ( skill could be considered as a constant for both teams)
+
+
+```{r, echo=FALSE}
+difference<-exp(ms2[,"home_baseline"]-exp(ms2[,"away_baseline"]))
+#valore atteso della differenza a parità di skill. metti formula
+mean_diff<-mean(difference)
+mean_diff
+hist(difference, main = "Home strength in number of goals")
+```
+
+We can also see this difference by making a prediction with model 1 and then with model 2.
+In fact, the model 1 don't consider a baseline effect for the teams but assume that, if both teams are equally good, then there is a (probably) positive probability of scoring a goal.
+However, by adding a home strength in the team that is playing at home, we can see in the second graph that now the away team will scoree less goals, and the home team will win with a higher probability.
+Let's see this for the game Frosinone-Juventus. The graphs in the first row represents a random poisson distribution from the data taken from the MCMC sample, and a histogram of the goal scored by the home team and the away team are described, and finally a probability of the possible result of the game (away win, draw, home win). This is done since we have calculated the difference between home goal and away goals, and if this difference is positive, probably there will be a home win or a draw, otherwise the away team should win.
+
+The graphs in second raw represents the actual data, so the probability that Juventus (away_team) wins is of course 1, since the game end up for a win of Juventus.
+
+Let's see the graphs by applying the model 2 first (home and away effects)
+
+
+
+```{r ,echo=FALSE}
+col_name <- function(name, ...) {
+paste0(name, "[", paste(..., sep = ","), "]")
+}
+
+plot_goals <- function(home_goals, away_goals) {
+n_matches <- length(home_goals)
+goal_diff <- home_goals - away_goals
+match_result <- ifelse(goal_diff < 0, "away_win", ifelse(goal_diff > 0,
+"home_win", "equal"))
+hist(home_goals, xlim = c(-0.5, 10), breaks = (0:100) - 0.5)
+5
+hist(away_goals, xlim = c(-0.5, 10), breaks = (0:100) - 0.5)
+hist(goal_diff, xlim = c(-6, 6), breaks = (-100:100) - 0.5)
+barplot(table(match_result)/n_matches, ylim = c(0, 1))
+}
+
+plot_pred_comp2 <- function(home_team, away_team, ms2) {
+par(mfrow = c(2, 4))
+home_baseline <- ms2[, "home_baseline"]
+away_baseline <- ms2[, "away_baseline"]
+home_skill <- ms2[, col_name("skill", which(teams == home_team))]
+away_skill <- ms2[, col_name("skill", which(teams == away_team))]
+home_goals <- rpois(nrow(ms2), exp(home_baseline + home_skill - away_skill))
+away_goals <- rpois(nrow(ms2), exp(away_baseline + away_skill - home_skill))
+plot_goals(home_goals, away_goals)
+home_goals <- data$home.goals[data$HomeTeam == home_team & data$AwayTeam == away_team]
+away_goals <- data$away.goals[data$HomeTeam == home_team & data$AwayTeam == away_team]
+plot_goals(home_goals, away_goals)
+}
+plot_pred_comp2("Frosinone", "Juventus", ms2)
+```
+
+For comparison, let's now check how the graphs change if we use the first model with assumption on the baseline (equal for every teams), so by using the first model.
+
+```{r , echo=FALSE}
+plot_pred_comp1 <- function(home_team, away_team, ms_1) {
+par(mfrow = c(2, 4))
+baseline <- ms_1[, "baseline"]
+home_skill <- ms_1[, col_name("skill", which(teams == home_team))]
+away_skill <- ms_1[, col_name("skill", which(teams == away_team))]
+home_goals <- rpois(nrow(ms_1), exp(baseline + home_skill - away_skill))
+away_goals <- rpois(nrow(ms_1), exp(baseline + away_skill - home_skill))
+plot_goals(home_goals, away_goals)
+# Plots the actual distribution of goals between the two teams
+home_goals <- data$home.goals[data$HomeTeam == home_team & data$AwayTeam == away_team]
+away_goals <- data$away.goals[data$HomeTeam == home_team & data$AwayTeam == away_team]
+plot_goals(home_goals, away_goals)
+}
+plot_pred_comp1("Frosinone", "Juventus", ms_1)
+```
+
+We can see a difference in the number of goals scored by the home team (which is a bit higher, as shown in the first graph) while the away team now will probably score more goals and have a more (although very small) probability of win. However, this ast graph does not represent the truth in football, since a home factor is considered a strength for many teams. Although the skills of Juventus are way bigger than the skills of Frosinone, so Juventus will end up to win this game in this predicition, also with the home factor for Frosinone.
+
+# MODEL WITH HOME BASELINE
+
+
+Next model will develop this strength and give to theta the values of home + skill home team - skill away team. For the team playing away, only its skills minus the skills of the home team will be considered.
+Next model will also analyse how this factor (home factor) is different between the 20 teams of the Serie A.
+
+$log(λ_{home}) = homebaseline_{i} + skill_{home} - skill_{away}$
+
+$log(λ_{away}) = skill_{away} - skill_{home}$
+
+
+```{r echo=TRUE, results='hide'}
+m3<- "model {
+for(i in 1:n_games) {
+  HomeGoals[i] ~ dpois(lambda_home[HomeTeam[i],AwayTeam[i]])
+  AwayGoals[i] ~ dpois(lambda_away[HomeTeam[i],AwayTeam[i]])
+}
+
+for(home_i in 1:n_teams) {
+  for(away_i in 1:n_teams) {
+    lambda_home[home_i, away_i] <- exp( home_baseline[home_i] + skill[home_i] - skill[away_i])
+    lambda_away[home_i, away_i] <- exp(skill[away_i] - skill[home_i])
+  }
+}
+for(j in 1:n_teams) {
+  home_baseline[j] ~ dnorm(0,0.0625)
+}
+skill[1] <- 0 
+for(j in 2:n_teams) {
+  skill[j] ~ dnorm(group_skill, group_tau)
+}
+group_skill ~ dnorm(0, 0.0625)
+group_tau <- 1/pow(group_sigma, 2)
+group_sigma ~ dunif(0, 3)
+}"
+
+dl3<-list(HomeGoals=data$home.goals,AwayGoals=data$away.goals,HomeTeam=data$IDh,
+         AwayTeam=data$IDa,
+         n_teams=length(teams),n_games=nrow(data),n_teams_home=length(data$home.goals)
+)
+n_teams_home<-length(data$home.goals)
+m3_fit <- jags.model(textConnection(m3), data=dl, n.chains=3, n.adapt=5000)
+s3 <- coda.samples(m3_fit, variable.names=c("home_baseline","skill", "group_sigma", "group_skill"), n.iter=10000, thin=2)
+ms3 <- as.matrix(s3)
+
+```
+
+We can see how the teams performs with the strength of their public and their stadium (so by playing at home). A mean of the MCMC sample is provided by taking the exponential of the home_baseline.
+We can see that Frosinone can score almost 1 goal at home, while Juventus will probably score 1 goal and maybe 1 more, while the surprising fact is that Roma, only by playing at home, can already score a mean of 2 goals. This is however confirmed by data, since in Serie A 2018-19 the mean goals of Roma at home was 2.26 (a total of 43 goals in 19 games).
+
+```{r}
+mean_goals_homejuve<-mean(exp(ms3[,"home_baseline[9]"]))
+mean_goals_homefrosinone<-mean(exp(ms3[,"home_baseline[13]"]))
+mean_goals_homeroma<-mean(exp(ms3[,"home_baseline[18]"]))
+mean_teams<-c(mean_goals_homefrosinone,mean_goals_homejuve,mean_goals_homeroma)
+mean_teams
+```
+Let's check graphically the density and the traceplot for Juventus, Frosinone and Roma.
+
+```{r , echo=FALSE}
+plot(s3[,("home_baseline[9]")], main = "")
+mtext("Traceplot and Density of the home factor for Juventus",side = 3, line = -1,outer = T)
+plot(s3[,("home_baseline[13]")], main = "")
+mtext("Traceplot and Density of the home factor for Frosinone" ,side = 3, line = -1,outer = T)
+plot(s3[,("home_baseline[18]")], main = "")
+mtext("Traceplot and Density of the home factor for Roma ",side = 3, line = -1,outer = T)
+```
+
+Data are a bit different since the home_baseline effect is taken without the exponential. However, we can see that Roma has a bigger strength at home rather than Juventus and Frosinone.
+
+Now let's see a comparison of the model, but firstly let's see a summary of the three models.
+
+```{r}
+summary(sample_1)
+```
+
+```{r}
+summary(s2)
+```
+
+```{r}
+summary(s3)
+
+```
+
+Let's see in a table the results for the home effect for all the teams of Serie A
+
+```{r include=F}
+clubs<-matrix(c("Atalanta","Bologna","Cagliari","Chievo","Empoli","Fiorentina","Frosinone","Genoa","Inter","Juventus","Lazio","Milan","Napoli","Parma","Roma","Sampdoria","Sassuolo","Spal","Torino","Udinese"))
+mean1<-mean(home_base_line<-ms3[,"home_baseline[8]"])
+mean2<-mean(home_base_line<-ms3[,"home_baseline[3]"])
+mean3<-mean(home_base_line<-ms3[,"home_baseline[11]"])
+mean4<-mean(home_base_line<-ms3[,"home_baseline[1]"])
+mean5<-mean(home_base_line<-ms3[,"home_baseline[4]"])
+mean6<-mean(home_base_line<-ms3[,"home_baseline[12]"])
+mean7<-mean(home_base_line<-ms3[,"home_baseline[12]"])
+mean8<-mean(home_base_line<-ms3[,"home_baseline[14]"])
+mean9<-mean(home_base_line<-ms3[,"home_baseline[15]"])
+mean10<-mean(home_base_line<-ms3[,"home_baseline[9]"])
+mean11<-mean(home_base_line<-ms3[,"home_baseline[2]"])
+mean12<-mean(home_base_line<-ms3[,"home_baseline[19]"])
+mean13<-mean(home_base_line<-ms3[,"home_baseline[10]"])
+mean14<-mean(home_base_line<-ms3[,"home_baseline[5]"])
+mean15<-mean(home_base_line<-ms3[,"home_baseline[18]"])
+mean16<-mean(home_base_line<-ms3[,"home_baseline[20]"])
+mean17<-mean(home_base_line<-ms3[,"home_baseline[6]"])
+mean18<-mean(home_base_line<-ms3[,"home_baseline[16]"])
+mean19<-mean(home_base_line<-ms3[,"home_baseline[7]"])
+mean20<-mean(home_base_line<-ms3[,"home_baseline[17]"])
+
+means<-matrix(c(mean1,mean2,mean3,mean4,mean5,mean6,mean7,mean8,mean9,mean10,mean11,mean12,mean13,mean14,mean15,mean16,mean17,mean18,mean19,mean20))
+
+```
+
+```{r}
+colnames(means)<-"Home Effect for club"
+rownames(means)<-clubs
+final<-as.table(means)
+final
+```
+Some results are a bit strange initially. Fo example, Empoli has a very high value if playing at hoem, and this can be confirmed since Empoli made almost 30 points at home while a few away.
+Also Inter has a low value, this is so since the team have not obtained so much points at home, but they have very strong skills. Also Roma has a very high value for the home effect, since almost every game at home was a win for Roma.
+
+# PREDICTION OF RESULTS
+
+Let's make some prediction of some games and let's see for some possible results. Firstly, I have decided to see the result between -1 and +1, where -1 indicates that the away team wins, while 0 is a draw, and +1 means that home team wins.
+I considered a random poisson draw for the skills and the home factor taken from the MCMC samples.
+The result is done by taking the difference between goals home and goals away.
+Let's see the first three games.
+
+FROSINONE-JUVENTUS
+
+```{r}
+skill_A<-ms3[,"skill[9]"]
+skill_H<-ms3[,"skill[13]"]
+home_base_line<-ms3[,"home_baseline[9]"]
+
+Goals_h<-rpois(10000,exp(home_base_line+skill_H-skill_A))
+Goals_a<-rpois(10000,exp(skill_A-skill_H))
+result<-sign(Goals_h-Goals_a)
+mean(result)
+
+```
+Probably Juventus will win this game.
+
+
+LAZIO-NAPOLI
+
+The first result is the mean goals of the home team, the second represents the mean of the away goals and then the result is considered.
+
+
+```{r}
+skill_A<-ms3[,"skill[10]"]
+skill_H<-ms3[,"skill[2]"]
+home_base_line<-ms3[,"home_baseline[2]"]
+
+Goals_h<-rpois(10000,exp(home_base_line+skill_H-skill_A))
+mean(Goals_h)
+Goals_a<-rpois(10000,exp(skill_A-skill_H))
+mean(Goals_a)
+result<-sign(Goals_h-Goals_a)
+mean(result)
+```
+Probably a draw between these two teams is possible.
+
+
+BOLOGNA - SPAL
+
+```{r}
+skill_A<-ms3[,"skill[16]"]
+skill_H<-ms3[,"skill[3]"]
+home_base_line<-ms3[,"home_baseline[3]"]
+home_base_lineH<-rnorm(10000,mean = 0, sd=4)
+
+Goals_h<-rpois(10000,exp(home_base_line+skill_H-skill_A))
+mean(Goals_h)
+Goals_a<-rpois(10000,exp(skill_A-skill_H))
+mean(Goals_a)
+result<-sign(Goals_h-Goals_a)
+mean(result)
+```
+
+Also here a draw is the most probable result.
+
+Lets's check some differences in skills between teams of Juventus and other teams such as Napoli and Roma.
+
+JUVE AND NAPOLI differences in skills
+
+```{r}
+team_skill_juve<-ms3[,"skill[9]"]
+team_skill_napoli<-ms3[,"skill[10]"]
+diff<-(exp(team_skill_juve)-exp(team_skill_napoli))
+head(mean(diff))
+```
+
+JUVE AND ROMA differences in skills
+
+```{r}
+team_skill_juve<-ms3[,"skill[9]"]
+team_skill_roma<-ms3[,"skill[18]"]
+diff<-(exp(team_skill_juve)-exp(team_skill_roma))
+head(mean(diff))
+
+```
+Juventus and Napoli are very similar in skills, while Juvenuts is much stronger than Roma for its skills.
+
+
+
+## MODEL COMPARISON TROUGH DIC
+
+```{r , warning=FALSE}
+dic_m1<-dic.samples(m3_fit,10000,"pD")
+dic_m2<-dic.samples(m2,10000,"pD")
+dic_m3<-dic.samples(model1_fit,10000,"pD")
+```
+
+
+```{r}
+diffdic(dic_m1,dic_m2)
+diffdic(dic_m2,dic_m3)
+diffdic(dic_m1,dic_m3)
+
+```
+In the first analysis, DIC of model 2 is better than DIC of model1, then model 2 is also preferred for model 3, while model 3 is preferred over model 1. So we can conclude by DIC that model 2 is preferred between all these models.
+We can confirm that the 1st model is not so good to perform an analysis of goals scored by a team. While the second model is the best to perform this type analysis, although the third remains good to predicition.
+
+# MODEL CHECKING DIAGNOSTICS
+
+```{r, warning=FALSE}
+s3_gg<-ggs(s3)
+summary(s3_gg)
+```
+
+```{r}
+s2_gg<-ggs(s2)
+summary(s2_gg)
+```
+
+```{r}
+s1_gg<-ggs(sample_1)
+summary(s1_gg)
+```
+
+
+
